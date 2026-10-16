@@ -1,0 +1,8 @@
+torch
+segmentation-models-pytorch==0.5.0
+flask>=3.0
+tifffile
+numpy
+pillow
+# optional, for production serving:
+# gunicorn

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Water Segmentation</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1b2330; --muted: #5d6b7e; --line: #dde2ea;
+    --accent: #1f6feb; --accent-text: #ffffff; --danger: #b42318; --danger-bg: #fdeceb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f141b; --card: #171e28; --text: #e6ebf2; --muted: #95a3b8; --line: #2a3442;
+      --accent: #4c8dff; --accent-text: #0b1220; --danger: #ffb4ab; --danger-bg: #3a1b19;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  #drop { border: 2px dashed var(--line); border-radius: 12px; padding: 28px 16px; text-align: center;
+          color: var(--muted); cursor: pointer; transition: border-color .15s, background .15s; }
+  #drop.over, #drop:focus-visible { border-color: var(--accent); outline: none; }
+  #drop strong { color: var(--text); }
+  .row { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; margin-top: 14px; }
+  label { color: var(--muted); font-size: .9rem; }
+  input[type=range] { vertical-align: middle; width: 160px; accent-color: var(--accent); }
+  button { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 8px;
+           padding: 9px 18px; font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  #error { display: none; margin-top: 14px; padding: 10px 14px; border-radius: 8px;
+           background: var(--danger-bg); color: var(--danger); }
+  #results { display: none; margin-top: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  figure { margin: 0; text-align: center; }
+  figure img { width: 100%; image-rendering: pixelated; border-radius: 8px; border: 1px solid var(--line);
+               background: #000; display: block; }
+  figcaption { color: var(--muted); font-size: .85rem; margin-top: 6px; }
+  .stats { display: flex; flex-wrap: wrap; gap: 8px 28px; margin-top: 16px; }
+  .stat b { display: block; font-size: 1.25rem; }
+  .stat span { color: var(--muted); font-size: .85rem; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Water segmentation</h1>
+  <p class="sub">Upload a 12-band satellite tile (.tif / .tiff / .npy) and get a per-pixel water mask.</p>
+
+  <section class="card">
+    <div id="drop" tabindex="0" role="button" aria-label="Choose a file to upload">
+      <p><strong>Drop a file here</strong> or click to choose one</p>
+      <p id="fname">No file selected</p>
+    </div>
+    <input id="file" type="file" accept=".tif,.tiff,.npy" hidden>
+
+    <div class="row">
+      <label for="thr">Threshold: <b id="thrv">0.50</b></label>
+      <input id="thr" type="range" min="0.05" max="0.95" step="0.05" value="0.5">
+      <button id="run" disabled>Segment</button>
+    </div>
+    <div id="error" role="alert"></div>
+  </section>
+
+  <section id="results" class="card" aria-live="polite">
+    <div class="grid">
+      <figure><img id="rgb" alt="True-colour preview of the uploaded tile"><figcaption>True colour (bands 4, 3, 2)</figcaption></figure>
+      <figure><img id="mask" alt="Predicted water mask"><figcaption>Predicted mask (white = water)</figcaption></figure>
+      <figure><img id="overlay" alt="Mask overlaid on the tile"><figcaption class="legend"><i style="background:#1e6eff"></i>Water overlay</figcaption></figure>
+    </div>
+    <div class="stats">
+      <div class="stat"><b id="frac">-</b><span>water coverage</span></div>
+      <div class="stat"><b id="size">-</b><span>tile size (px)</span></div>
+      <div class="stat"><b id="ms">-</b><span>inference time</span></div>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const drop = $('drop'), fileInput = $('file'), run = $('run'), err = $('error');
+  let file = null;
+
+  const setFile = f => {
+    file = f || null;
+    $('fname').textContent = file ? file.name : 'No file selected';
+    run.disabled = !file;
+    err.style.display = 'none';
+  };
+  const showError = msg => { err.textContent = msg; err.style.display = 'block'; };
+
+  drop.addEventListener('click', () => fileInput.click());
+  drop.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } });
+  fileInput.addEventListener('change', () => setFile(fileInput.files[0]));
+  ['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
+  drop.addEventListener('drop', e => setFile(e.dataTransfer.files[0]));
+
+  $('thr').addEventListener('input', e => { $('thrv').textContent = (+e.target.value).toFixed(2); });
+
+  async function segment() {
+    if (!file) return;
+    run.disabled = true; run.textContent = 'Working...'; err.style.display = 'none';
+    const fd = new FormData();
+    fd.append('image', file);
+    fd.append('threshold', $('thr').value);
+    try {
+      const res = await fetch('/predict', { method: 'POST', body: fd });
+      const data = await res.json().catch(() => ({ error: 'The server returned an unreadable response.' }));
+      if (!res.ok) throw new Error(data.error || ('Request failed (' + res.status + ')'));
+      $('rgb').src = 'data:image/png;base64,' + data.rgb_png_base64;
+      $('mask').src = 'data:image/png;base64,' + data.mask_png_base64;
+      $('overlay').src = 'data:image/png;base64,' + data.overlay_png_base64;
+      $('frac').textContent = (data.water_fraction * 100).toFixed(1) + '%';
+      $('size').textContent = data.width + ' x ' + data.height;
+      $('ms').textContent = data.inference_ms + ' ms';
+      $('results').style.display = 'block';
+    } catch (e) {
+      $('results').style.display = 'none';
+      showError(e.message);
+    } finally {
+      run.disabled = !file; run.textContent = 'Segment';
+    }
+  }
+  run.addEventListener('click', segment);
+})();
+</script>
+</body>
+</html>
